@@ -215,7 +215,7 @@
               이용 방법 보기 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>
             </a>
           </div>
-          <div class="hero-note"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11z"/><path d="m9 12 2 2 4-4"/></svg> GitHub Releases에서 공개된 파일로 연결됩니다.</div>
+          <div class="hero-note"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11z"/><path d="m9 12 2 2 4-4"/></svg> GitHub downloads 폴더와 Releases의 공개 파일로 연결됩니다.</div>
         </div>
         <div class="feature-visual" aria-hidden="true">
           <div class="visual-orbit"></div>
@@ -248,7 +248,7 @@
           <div>
             <div class="section-eyebrow">OUR SOFTWARE</div>
             <h2 id="programs-title">프로그램 다운로드</h2>
-            <p class="section-desc">공개된 프로그램을 확인하고 필요한 설치 파일을 선택하세요.</p>
+            <p class="section-desc">GitHub 다운로드 폴더에 ZIP 파일을 올리면 이곳에 자동으로 표시됩니다.</p>
           </div>
           <span class="count" id="item-count">불러오는 중...</span>
         </div>
@@ -319,6 +319,9 @@
       var repo = 'program-downloads';
       var releasesUrl = 'https://github.com/' + owner + '/' + repo + '/releases';
       var apiUrl = 'https://api.github.com/repos/' + owner + '/' + repo + '/releases?per_page=100';
+      var folderUrl = 'https://github.com/' + owner + '/' + repo + '/tree/main/downloads';
+      var folderApiUrl = 'https://api.github.com/repos/' + owner + '/' + repo + '/contents/downloads?ref=main';
+      var folderItems = [];
       var releases = [];
       var isError = false;
       var catalog = document.getElementById('catalog');
@@ -380,7 +383,7 @@
         box.appendChild(make('h3', '', title));
         box.appendChild(make('p', '', description));
         if (linkText) {
-          var link = external(releasesUrl, '', '');
+          var link = external(folderUrl, '', '');
           link.appendChild(make('span', '', linkText));
           link.appendChild(svg('M5 12h14m-6-6 6 6-6 6'));
           box.appendChild(link);
@@ -398,7 +401,7 @@
         heading.appendChild(make('h3', '', title));
         var meta = make('div', 'metadata');
         if (release.tag_name) meta.appendChild(make('span','version',release.tag_name));
-        meta.appendChild(make('span','',formatDate(release.published_at || release.created_at)));
+        meta.appendChild(make('span','',release.fromFolder ? 'GitHub 다운로드 폴더' : formatDate(release.published_at || release.created_at)));
         if (release.prerelease) meta.appendChild(make('span','version','사전 공개'));
         heading.appendChild(meta);
         top.appendChild(heading);
@@ -427,7 +430,7 @@
         card.appendChild(dl);
         var footer = make('div','release-footer');
         footer.appendChild(make('span','',assets.length + '개 파일' + (assets.length > 8 ? ' · 일부만 표시' : '')));
-        footer.appendChild(external(release.html_url || releasesUrl, '릴리스 자세히 보기 ↗', ''));
+        footer.appendChild(external(release.html_url || releasesUrl, release.fromFolder ? 'GitHub 파일 보기 ↗' : '릴리스 자세히 보기 ↗', ''));
         card.appendChild(footer);
         return card;
       }
@@ -440,13 +443,13 @@
           state('목록을 불러오지 못했습니다', 'GitHub 연결을 확인하거나 잠시 후 다시 방문해 주세요.', 'GitHub에서 직접 확인하기');
           return;
         }
-        if (!releases.length) {
+        if (!releases.length && !folderItems.length) {
           count.textContent = '등록된 프로그램 0개';
-          state('첫 번째 프로그램을 준비 중입니다', '아직 공개된 설치 파일이 없습니다. 프로그램이 등록되면 이곳에서 다운로드할 수 있습니다.', '배포 현황 확인하기');
+          state('첫 번째 프로그램을 준비 중입니다', '아직 ZIP 파일이 없습니다. GitHub downloads 폴더에 v1.zip, v2.zip 등을 올리면 여기에 자동 표시됩니다.', '다운로드 폴더 확인하기');
           return;
         }
         var matches = [];
-        releases.forEach(function (release) {
+        folderItems.concat(releases).forEach(function (release) {
           var all = Array.isArray(release.assets) ? release.assets.filter(function(a){return !!a.browser_download_url;}) : [];
           var assets = all.filter(function (a) { return selected === 'all' || platform(a.name || '') === selected; });
           var haystack = [release.name, release.tag_name, release.body].concat(all.map(function(a){return a.name;})).join(' ').toLocaleLowerCase();
@@ -463,16 +466,61 @@
       }
       search.addEventListener('input', render);
       platformFilter.addEventListener('change', render);
-      fetch(apiUrl, {headers:{'Accept':'application/vnd.github+json'}})
-        .then(function (res) {if(!res.ok) throw Error('GitHub API HTTP ' + res.status); return res.json();})
-        .then(function (data) {
-          if (!Array.isArray(data)) throw Error('Unexpected API response');
-          releases = data.filter(function (r) {return !r.draft;}).sort(function (a,b) {
+      function loadJson(url) {
+        return fetch(url, {headers:{'Accept':'application/vnd.github+json'}, cache:'no-store'})
+          .then(function (res) {
+            if (!res.ok) throw Error('GitHub API HTTP ' + res.status);
+            return res.json();
+          });
+      }
+      // Both sources are independent. If either request fails, the other can still be displayed.
+      Promise.allSettled([loadJson(folderApiUrl), loadJson(apiUrl)]).then(function (results) {
+        var folder = results[0].status === 'fulfilled' ? results[0].value : null;
+        var published = results[1].status === 'fulfilled' ? results[1].value : null;
+        var folderOk = Array.isArray(folder);
+        var releasesOk = Array.isArray(published);
+
+        if (folderOk) {
+          folderItems = folder
+            .filter(function (file) {
+              return file.type === 'file' && /\.zip$/i.test(file.name || '');
+            })
+            .sort(function (a, b) {
+              return b.name.localeCompare(a.name, undefined, {numeric:true, sensitivity:'base'});
+            })
+            .map(function (file) {
+              var filename = file.name;
+              var stem = filename.replace(/\.zip$/i, '');
+              var version = (stem.match(/v\d+(?:\.\d+)*/i) || [])[0] || '';
+              return {
+                name: stem,
+                tag_name: version,
+                body: 'GitHub 다운로드 폴더에 등록된 ZIP 압축 파일입니다.',
+                fromFolder: true,
+                html_url: file.html_url || folderUrl,
+                assets: [{
+                  name: filename,
+                  size: file.size,
+                  browser_download_url: file.download_url ||
+                    'https://raw.githubusercontent.com/' + owner + '/' + repo + '/main/downloads/' + encodeURIComponent(filename)
+                }]
+              };
+            });
+        } else {
+          console.warn('ZIP folder request failed:', results[0].reason || folder);
+        }
+
+        if (releasesOk) {
+          releases = published.filter(function (r) {return !r.draft;}).sort(function (a,b) {
             return new Date(b.published_at || b.created_at).getTime() - new Date(a.published_at || a.created_at).getTime();
           });
-          render();
-        })
-        .catch(function (e) {console.warn('Download catalog:', e); isError = true; render();});
+        } else {
+          console.warn('GitHub Releases request failed:', results[1].reason || published);
+        }
+
+        isError = !folderOk && !releasesOk;
+        render();
+      });
     })();
   </script>
 </body>
